@@ -1,0 +1,14 @@
+{
+    "name": "sportedia/sportedia",
+    "description": "Sportedia Sports Academy Management System WordPress Plugin",
+    "type": "wordpress-plugin",
+    "require": {
+        "phpoffice/phpspreadsheet": "^2.0"
+    },
+    "authors": [
+        {
+            "name": "Sportedia",
+            "email": "info@sportedia.com"
+        }
+    ]
+}
