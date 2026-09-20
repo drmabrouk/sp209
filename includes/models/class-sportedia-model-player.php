@@ -1,6 +1,8 @@
 <?php
 /**
  * Player Model
+ * Player registration is fully flexible: Full Name is the ONLY mandatory field.
+ * All other fields are optional. Missing fields are tracked for visual pastel status capsules.
  *
  * @package Sportedia
  */
@@ -34,9 +36,23 @@ class Sportedia_Model_Player {
         if (empty($dob)) {
             return 0;
         }
-        $birth_date = new DateTime($dob);
-        $today = new DateTime('today');
-        return $birth_date->diff($today)->y;
+        try {
+            $birth_date = new DateTime($dob, Sportedia_DateTime::get_timezone());
+            $today = new DateTime('today', Sportedia_DateTime::get_timezone());
+            return $birth_date->diff($today)->y;
+        } catch (Exception $e) {
+            return 0;
+        }
+    }
+
+    public static function get_missing_fields($player) {
+        $missing = array();
+        if (empty($player->gender)) { $missing[] = __('Gender', 'sportedia'); }
+        if (empty($player->date_of_birth)) { $missing[] = __('DOB', 'sportedia'); }
+        if (empty($player->sport_id)) { $missing[] = __('Sport', 'sportedia'); }
+        if (empty($player->group_id)) { $missing[] = __('Group', 'sportedia'); }
+        if (empty($player->level)) { $missing[] = __('Level', 'sportedia'); }
+        return $missing;
     }
 
     public static function create($data) {
@@ -45,23 +61,23 @@ class Sportedia_Model_Player {
 
         $full_name = sanitize_text_field($data['full_name'] ?? '');
         if (empty($full_name)) {
-            return new WP_Error('missing_field', __('Player full name is required.', 'sportedia'));
+            return new WP_Error('missing_field', __('Player Full Name is mandatory.', 'sportedia'));
         }
 
         $player_code = !empty($data['player_code']) ? sanitize_text_field($data['player_code']) : self::generate_code();
-        $gender = sanitize_text_field($data['gender'] ?? 'Male');
+        $gender = !empty($data['gender']) ? sanitize_text_field($data['gender']) : null;
         $date_of_birth = !empty($data['date_of_birth']) ? sanitize_text_field($data['date_of_birth']) : null;
-        $age = !empty($data['age']) ? intval($data['age']) : ($date_of_birth ? self::calculate_age($date_of_birth) : 0);
+        $age = !empty($data['age']) ? intval($data['age']) : ($date_of_birth ? self::calculate_age($date_of_birth) : null);
         $sport_id = !empty($data['sport_id']) ? intval($data['sport_id']) : null;
         $group_id = !empty($data['group_id']) ? intval($data['group_id']) : null;
-        $level = sanitize_text_field($data['level'] ?? 'Beginner');
+        $level = !empty($data['level']) ? sanitize_text_field($data['level']) : null;
         $status = sanitize_text_field($data['status'] ?? 'active');
         $notes = sanitize_textarea_field($data['notes'] ?? '');
 
-        // Check unique code
+        // Ensure player code uniqueness
         $existing = $wpdb->get_var($wpdb->prepare("SELECT id FROM $table WHERE player_code = %s", $player_code));
         if ($existing) {
-            return new WP_Error('duplicate_code', __('Player ID/Code already exists.', 'sportedia'));
+            $player_code = self::generate_code();
         }
 
         $inserted = $wpdb->insert(
@@ -77,17 +93,24 @@ class Sportedia_Model_Player {
                 'level' => $level,
                 'status' => $status,
                 'notes' => $notes,
-                'created_at' => current_time('mysql'),
-                'updated_at' => current_time('mysql'),
+                'created_at' => Sportedia_DateTime::now(),
+                'updated_at' => Sportedia_DateTime::now(),
             ),
             array('%s', '%s', '%s', '%s', '%d', '%d', '%d', '%s', '%s', '%s', '%s', '%s')
         );
 
         if ($inserted === false) {
-            return new WP_Error('db_error', __('Could not create player.', 'sportedia'));
+            return new WP_Error('db_error', __('Could not create player record.', 'sportedia'));
         }
 
-        return $wpdb->insert_id;
+        $player_id = $wpdb->insert_id;
+
+        // Auto-initialize Default Session Package (8 Sessions)
+        $pkg_sessions = !empty($data['package_sessions']) ? intval($data['package_sessions']) : 8;
+        $pkg_name = sprintf(__('%d Sessions Package', 'sportedia'), $pkg_sessions);
+        Sportedia_Model_Package::create($player_id, $pkg_name, $pkg_sessions);
+
+        return $player_id;
     }
 
     public static function update($id, $data) {
@@ -102,7 +125,7 @@ class Sportedia_Model_Player {
             $format[] = '%s';
         }
         if (isset($data['gender'])) {
-            $update_data['gender'] = sanitize_text_field($data['gender']);
+            $update_data['gender'] = !empty($data['gender']) ? sanitize_text_field($data['gender']) : null;
             $format[] = '%s';
         }
         if (isset($data['date_of_birth'])) {
@@ -110,12 +133,12 @@ class Sportedia_Model_Player {
             $update_data['date_of_birth'] = $dob ?: null;
             $format[] = '%s';
             if (!isset($data['age'])) {
-                $update_data['age'] = $dob ? self::calculate_age($dob) : 0;
+                $update_data['age'] = $dob ? self::calculate_age($dob) : null;
                 $format[] = '%d';
             }
         }
         if (isset($data['age'])) {
-            $update_data['age'] = intval($data['age']);
+            $update_data['age'] = !empty($data['age']) ? intval($data['age']) : null;
             $format[] = '%d';
         }
         if (isset($data['sport_id'])) {
@@ -127,7 +150,7 @@ class Sportedia_Model_Player {
             $format[] = '%d';
         }
         if (isset($data['level'])) {
-            $update_data['level'] = sanitize_text_field($data['level']);
+            $update_data['level'] = !empty($data['level']) ? sanitize_text_field($data['level']) : null;
             $format[] = '%s';
         }
         if (isset($data['status'])) {
@@ -143,7 +166,7 @@ class Sportedia_Model_Player {
             return false;
         }
 
-        $update_data['updated_at'] = current_time('mysql');
+        $update_data['updated_at'] = Sportedia_DateTime::now();
         $format[] = '%s';
 
         return $wpdb->update($table, $update_data, array('id' => intval($id)), $format, array('%d'));
@@ -155,7 +178,7 @@ class Sportedia_Model_Player {
         $table_sports = $wpdb->prefix . 'sportedia_sports';
         $table_groups = $wpdb->prefix . 'sportedia_groups';
 
-        return $wpdb->get_row($wpdb->prepare(
+        $player = $wpdb->get_row($wpdb->prepare(
             "SELECT p.*, s.name as sport_name, g.name as group_name
              FROM $table p
              LEFT JOIN $table_sports s ON p.sport_id = s.id
@@ -163,6 +186,13 @@ class Sportedia_Model_Player {
              WHERE p.id = %d",
             intval($id)
         ));
+
+        if ($player) {
+            $player->package = Sportedia_Model_Package::get_active_package($player->id);
+            $player->missing_fields = self::get_missing_fields($player);
+        }
+
+        return $player;
     }
 
     public static function search($term, $limit = 15) {
@@ -182,7 +212,14 @@ class Sportedia_Model_Player {
                 ORDER BY p.full_name ASC
                 LIMIT %d";
 
-        return $wpdb->get_results($wpdb->prepare($sql, $like, $like, intval($limit)));
+        $players = $wpdb->get_results($wpdb->prepare($sql, $like, $like, intval($limit)));
+
+        foreach ($players as &$p) {
+            $p->package = Sportedia_Model_Package::get_active_package($p->id);
+            $p->missing_fields = self::get_missing_fields($p);
+        }
+
+        return $players;
     }
 
     public static function get_all($args = array()) {
@@ -205,14 +242,6 @@ class Sportedia_Model_Player {
         if (!empty($args['group_id'])) {
             $where[] = "p.group_id = %d";
             $params[] = intval($args['group_id']);
-        }
-        if (!empty($args['gender'])) {
-            $where[] = "p.gender = %s";
-            $params[] = $args['gender'];
-        }
-        if (!empty($args['level'])) {
-            $where[] = "p.level = %s";
-            $params[] = $args['level'];
         }
         if (!empty($args['search'])) {
             $where[] = "(p.full_name LIKE %s OR p.player_code LIKE %s)";
@@ -241,7 +270,14 @@ class Sportedia_Model_Player {
             $sql = $wpdb->prepare($sql, $params);
         }
 
-        return $wpdb->get_results($sql);
+        $players = $wpdb->get_results($sql);
+
+        foreach ($players as &$p) {
+            $p->package = Sportedia_Model_Package::get_active_package($p->id);
+            $p->missing_fields = self::get_missing_fields($p);
+        }
+
+        return $players;
     }
 
     public static function count_all($args = array()) {
@@ -258,18 +294,6 @@ class Sportedia_Model_Player {
         if (!empty($args['sport_id'])) {
             $where[] = "sport_id = %d";
             $params[] = intval($args['sport_id']);
-        }
-        if (!empty($args['group_id'])) {
-            $where[] = "group_id = %d";
-            $params[] = intval($args['group_id']);
-        }
-        if (!empty($args['gender'])) {
-            $where[] = "gender = %s";
-            $params[] = $args['gender'];
-        }
-        if (!empty($args['level'])) {
-            $where[] = "level = %s";
-            $params[] = $args['level'];
         }
         if (!empty($args['search'])) {
             $where[] = "(full_name LIKE %s OR player_code LIKE %s)";

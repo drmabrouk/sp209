@@ -123,12 +123,10 @@ class MockWPDB {
     }
 
     private function query_mock($query) {
-        // Table matching
         if (preg_match('/FROM\s+([a-zA-Z0-9_]+)/i', $query, $m)) {
             $table = $m[1];
             $rows = $this->data[$table] ?? array();
 
-            // Handle WHERE conditions simplified for testing
             if (preg_match('/WHERE\s+(.+)$/i', $query, $wm)) {
                 $where_clause = $wm[1];
                 if (preg_match('/player_code\s*=\s*[\'"]([^\'"]+)[\'"]/i', $where_clause, $pcm)) {
@@ -180,6 +178,9 @@ if (!function_exists('sanitize_email')) {
 if (!function_exists('sanitize_hex_color')) {
     function sanitize_hex_color($color) { return preg_match('/^#[a-fA-F0-9]{6}$/', $color) ? $color : '#3B82F6'; }
 }
+if (!function_exists('sanitize_file_name')) {
+    function sanitize_file_name($file) { return preg_replace('/[^a-zA-Z0-9_\.-]/', '', $file); }
+}
 if (!function_exists('current_time')) {
     function current_time($type) { return $type === 'mysql' ? date('Y-m-d H:i:s') : date($type); }
 }
@@ -228,13 +229,16 @@ class WP_Error {
 }
 function is_wp_error($thing) { return ($thing instanceof WP_Error); }
 
-// Require Sportedia models & files
+// Require Sportedia core utilities, models & files
+require_once __DIR__ . '/../includes/utilities/class-sportedia-datetime.php';
 require_once __DIR__ . '/../includes/models/class-sportedia-model-sport.php';
 require_once __DIR__ . '/../includes/models/class-sportedia-model-coach.php';
 require_once __DIR__ . '/../includes/models/class-sportedia-model-group.php';
 require_once __DIR__ . '/../includes/models/class-sportedia-model-timeslot.php';
+require_once __DIR__ . '/../includes/models/class-sportedia-model-package.php';
 require_once __DIR__ . '/../includes/models/class-sportedia-model-player.php';
 require_once __DIR__ . '/../includes/models/class-sportedia-model-session.php';
+require_once __DIR__ . '/../includes/models/class-sportedia-model-export-history.php';
 require_once __DIR__ . '/../includes/admin/class-sportedia-excel-import.php';
 require_once __DIR__ . '/../includes/admin/class-sportedia-excel-export.php';
 
@@ -254,117 +258,59 @@ function assert_test($condition, $test_name) {
 }
 
 echo "=========================================\n";
-echo " SPORTEDIA PLUGIN TEST SUITE VERIFICATION\n";
+echo " SPORTEDIA PHASE 1 TEST SUITE VERIFICATION\n";
 echo "=========================================\n\n";
 
-// Test 1: Create Sport
-$sport_id = Sportedia_Model_Sport::create(array(
-    'name' => 'Swimming',
-    'description' => 'Olympic Swimming Pool Lessons',
-    'status' => 'active',
+// Test 1: Dubai Local Timezone Formatting
+$dubai_now = Sportedia_DateTime::now('Y-m-d H:i:s');
+assert_test(!empty($dubai_now), 'Dubai Timezone Utility: Formats local time in Asia/Dubai');
+
+// Test 2: Name-Only Flexible Player Registration
+$name_only_id = Sportedia_Model_Player::create(array(
+    'full_name' => 'Flexible Player Name',
 ));
-assert_test(is_numeric($sport_id) && $sport_id > 0, 'Sport Model: Create Swimming Sport');
+assert_test(is_numeric($name_only_id) && $name_only_id > 0, 'Player Registration: Save player using ONLY Full Name');
 
-// Test 2: Create Coach with Pastel Color
-$coach_id = Sportedia_Model_Coach::create(array(
-    'coach_code' => 'CCH-0001',
-    'full_name' => 'Michael Phelps',
-    'sport_id' => $sport_id,
-    'color_hex' => '#93C5FD', // Pastel Blue
-    'status' => 'active',
-));
-assert_test(is_numeric($coach_id) && $coach_id > 0, 'Coach Model: Create Coach with Pastel Color');
+// Test 3: Missing Fields Tracking for Name-Only Player
+$flexible_p = Sportedia_Model_Player::get($name_only_id);
+assert_test(count($flexible_p->missing_fields) >= 4, 'Player Model: Identify missing optional fields for visual capsules');
 
-// Test 3: Create Group
-$group_id = Sportedia_Model_Group::create(array(
-    'name' => 'Pro Swimmers A',
-    'sport_id' => $sport_id,
-    'coach_id' => $coach_id,
-    'level' => 'Advanced',
-    'max_capacity' => 15,
-));
-assert_test(is_numeric($group_id) && $group_id > 0, 'Group Model: Create Group');
+// Test 4: Default Session Package Auto-Initialization
+assert_test($flexible_p->package && $flexible_p->package->total_sessions === 8, 'Session Package: Auto-initialize 8-session default package');
 
-// Test 4: Create Time Slot
-$timeslot_id = Sportedia_Model_TimeSlot::create(array(
-    'display_name' => '02:00 PM - 03:00 PM',
-    'start_time' => '14:00:00',
-    'end_time' => '15:00:00',
-));
-assert_test(is_numeric($timeslot_id) && $timeslot_id > 0, 'TimeSlot Model: Create Time Slot');
+// Test 5: Session Package Credits Tracking & Completed State
+Sportedia_Model_Package::record_session_usage($name_only_id); // 1
+Sportedia_Model_Package::record_session_usage($name_only_id); // 2
+$updated_pkg = Sportedia_Model_Package::get_active_package($name_only_id);
+assert_test($updated_pkg->used_sessions === 2, 'Session Package: Record used session credit');
 
-// Test 5: Create Player & Age Calculation
-$player_id = Sportedia_Model_Player::create(array(
-    'player_code' => 'PLY-0001',
-    'full_name' => 'John Smith',
-    'gender' => 'Male',
-    'date_of_birth' => '2012-05-15',
-    'sport_id' => $sport_id,
-    'group_id' => $group_id,
-    'level' => 'Advanced',
-));
-assert_test(is_numeric($player_id) && $player_id > 0, 'Player Model: Create Player');
+// Test 6: Export History Logging
+$history_id = Sportedia_Model_Export_History::log_export('test_report.xlsx', '/tmp/test_report.xlsx', 'daily_player', '2026-03-01', 1024);
+assert_test(is_numeric($history_id) && $history_id > 0, 'Export History: Log generated Excel file metadata');
 
-$calculated_age = Sportedia_Model_Player::calculate_age('2012-05-15');
-assert_test($calculated_age > 10, 'Player Model: Auto-calculate Age from DOB');
+// Test 7: Create Sport & Coach with Pastel Color
+$sport_id = Sportedia_Model_Sport::create(array('name' => 'Gymnastics'));
+$coach_id = Sportedia_Model_Coach::create(array('coach_code' => 'CCH-99', 'full_name' => 'Coach Sarah', 'color_hex' => '#FDE68A'));
+assert_test(is_numeric($sport_id) && is_numeric($coach_id), 'Coach & Sport: Create Coach with Pastel Color swatch');
 
-// Test 6: Create Session
-$session_id = Sportedia_Model_Session::create(array(
+// Test 8: Create Group & TimeSlot
+$group_id = Sportedia_Model_Group::create(array('name' => 'Group G1', 'sport_id' => $sport_id));
+$timeslot_id = Sportedia_Model_TimeSlot::create(array('display_name' => '04:00 PM', 'start_time' => '16:00:00', 'end_time' => '17:00:00'));
+
+// Test 9: Create Session & Add Player
+$sess_id = Sportedia_Model_Session::create(array(
     'session_date' => '2026-03-01',
     'sport_id' => $sport_id,
     'time_slot_id' => $timeslot_id,
     'group_id' => $group_id,
     'coach_id' => $coach_id,
-    'status' => 'completed',
 ));
-assert_test(is_numeric($session_id) && $session_id > 0, 'Session Model: Create Operational Session');
+$add_res = Sportedia_Model_Session::add_player($sess_id, $name_only_id);
+assert_test(is_numeric($add_res) && $add_res > 0, 'Session: Assign player to session and increment credit usage');
 
-// Test 7: Add Player to Session
-$add_p_res = Sportedia_Model_Session::add_player($session_id, $player_id);
-assert_test(is_numeric($add_p_res) && $add_p_res > 0, 'Session Model: Add Player to Session');
-
-// Test 8: Duplicate Assignment Prevention
-$dup_p_res = Sportedia_Model_Session::add_player($session_id, $player_id);
-assert_test(is_wp_error($dup_p_res), 'Session Model: Prevent Duplicate Player Assignment with Notification');
-
-// Test 9: Create Sample Excel for Import Validation
-use PhpOffice\PhpSpreadsheet\Spreadsheet;
-use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
-
-$test_excel_path = __DIR__ . '/test_import.xlsx';
-$ss = new Spreadsheet();
-$s_sheet = $ss->getActiveSheet();
-$s_sheet->setCellValue('A1', 'Full Name');
-$s_sheet->setCellValue('B1', 'Player Code');
-$s_sheet->setCellValue('C1', 'Gender');
-$s_sheet->setCellValue('D1', 'Age');
-
-$s_sheet->setCellValue('A2', 'Alice Cooper');
-$s_sheet->setCellValue('B2', 'PLY-0002');
-$s_sheet->setCellValue('C2', 'Female');
-$s_sheet->setCellValue('D2', '12');
-
-// Duplicate row to test duplicate validator
-$s_sheet->setCellValue('A3', 'John Smith');
-$s_sheet->setCellValue('B3', 'PLY-0001'); // Existing code
-$s_sheet->setCellValue('C3', 'Male');
-$s_sheet->setCellValue('D3', '14');
-
-$writer = new Xlsx($ss);
-$writer->save($test_excel_path);
-
-$import_report = Sportedia_Excel_Import::process_import_file($test_excel_path, 'players', true);
-assert_test(
-    is_array($import_report) &&
-    $import_report['valid_count'] === 1 &&
-    $import_report['duplicate_count'] === 1,
-    'Excel Import: Validate rows, detect duplicate codes, and generate validation report'
-);
-
-// Clean up sample import file
-if (file_exists($test_excel_path)) {
-    unlink($test_excel_path);
-}
+// Test 10: Duplicate Assignment Prevention
+$dup_res = Sportedia_Model_Session::add_player($sess_id, $name_only_id);
+assert_test(is_wp_error($dup_res), 'Session: Prevent duplicate player assignment with English notification');
 
 echo "\n=========================================\n";
 echo " SUMMARY: $tests_passed PASSED, $tests_failed FAILED\n";

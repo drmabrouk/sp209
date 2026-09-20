@@ -1,6 +1,7 @@
 <?php
 /**
- * Fired during plugin activation.
+ * Fired during plugin activation & DB migrations.
+ * Preserves existing data permanently across updates/reactivations.
  *
  * @package Sportedia
  */
@@ -15,6 +16,7 @@ class Sportedia_Activator {
         self::create_tables();
         self::add_roles_and_capabilities();
         self::set_default_options();
+        self::create_protected_upload_dir();
         flush_rewrite_rules();
     }
 
@@ -99,18 +101,18 @@ class Sportedia_Activator {
         ) $charset_collate;";
         dbDelta($sql_time_slots);
 
-        // 5. Players
+        // 5. Players (Flexible: Full Name mandatory, everything else optional)
         $table_players = $wpdb->prefix . 'sportedia_players';
         $sql_players = "CREATE TABLE IF NOT EXISTS $table_players (
             id BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT,
             player_code VARCHAR(50) NOT NULL,
             full_name VARCHAR(150) NOT NULL,
-            gender VARCHAR(20) NOT NULL DEFAULT 'Male',
-            date_of_birth DATE NULL,
-            age INT(11) NOT NULL DEFAULT 0,
-            sport_id BIGINT(20) UNSIGNED NULL,
-            group_id BIGINT(20) UNSIGNED NULL,
-            level VARCHAR(50) NULL,
+            gender VARCHAR(20) NULL DEFAULT NULL,
+            date_of_birth DATE NULL DEFAULT NULL,
+            age INT(11) NULL DEFAULT NULL,
+            sport_id BIGINT(20) UNSIGNED NULL DEFAULT NULL,
+            group_id BIGINT(20) UNSIGNED NULL DEFAULT NULL,
+            level VARCHAR(50) NULL DEFAULT NULL,
             status VARCHAR(20) NOT NULL DEFAULT 'active',
             notes TEXT NULL,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -161,6 +163,63 @@ class Sportedia_Activator {
             KEY player_id_idx (player_id)
         ) $charset_collate;";
         dbDelta($sql_session_players);
+
+        // 8. Player Session Packages
+        $table_player_packages = $wpdb->prefix . 'sportedia_player_packages';
+        $sql_player_packages = "CREATE TABLE IF NOT EXISTS $table_player_packages (
+            id BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT,
+            player_id BIGINT(20) UNSIGNED NOT NULL,
+            package_name VARCHAR(100) NOT NULL DEFAULT 'Standard Package',
+            total_sessions INT(11) NOT NULL DEFAULT 8,
+            used_sessions INT(11) NOT NULL DEFAULT 0,
+            additional_sessions INT(11) NOT NULL DEFAULT 0,
+            status VARCHAR(20) NOT NULL DEFAULT 'active',
+            completed_at DATETIME NULL DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            KEY player_id_idx (player_id),
+            KEY status_idx (status)
+        ) $charset_collate;";
+        dbDelta($sql_player_packages);
+
+        // 9. Excel Export History
+        $table_export_history = $wpdb->prefix . 'sportedia_export_history';
+        $sql_export_history = "CREATE TABLE IF NOT EXISTS $table_export_history (
+            id BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT,
+            file_name VARCHAR(255) NOT NULL,
+            file_path VARCHAR(255) NOT NULL,
+            report_type VARCHAR(100) NOT NULL,
+            date_range VARCHAR(100) NULL,
+            generated_by VARCHAR(150) NOT NULL DEFAULT 'System Administrator',
+            generation_time DATETIME NOT NULL,
+            file_size BIGINT(20) NOT NULL DEFAULT 0,
+            status VARCHAR(20) NOT NULL DEFAULT 'available',
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            KEY report_type_idx (report_type),
+            KEY status_idx (status)
+        ) $charset_collate;";
+        dbDelta($sql_export_history);
+    }
+
+    public static function create_protected_upload_dir() {
+        if (function_exists('wp_upload_dir')) {
+            $upload = wp_upload_dir();
+            $dir = $upload['basedir'] . '/sportedia-exports';
+            if (!file_exists($dir)) {
+                wp_mkdir_p($dir);
+            }
+            // Protect directory against direct browser directory listing / access
+            $htaccess = $dir . '/.htaccess';
+            if (!file_exists($htaccess)) {
+                @file_put_contents($htaccess, "Options -Indexes\n<Files *>\n  Order Allow,Deny\n  Deny from all\n</Files>\n");
+            }
+            $index = $dir . '/index.php';
+            if (!file_exists($index)) {
+                @file_put_contents($index, "<?php // Silence is golden.");
+            }
+        }
     }
 
     public static function add_roles_and_capabilities() {
@@ -203,29 +262,6 @@ class Sportedia_Activator {
                 'sportedia_import_export' => true,
             )
         );
-
-        // Sports Coach Role
-        add_role(
-            'sports_coach',
-            __('Sports Coach', 'sportedia'),
-            array(
-                'read' => true,
-                'sportedia_view_dashboard' => true,
-                'sportedia_manage_sessions' => true,
-                'sportedia_view_reports' => true,
-            )
-        );
-
-        // Sports Viewer Role
-        add_role(
-            'sports_viewer',
-            __('Sports Viewer', 'sportedia'),
-            array(
-                'read' => true,
-                'sportedia_view_dashboard' => true,
-                'sportedia_view_reports' => true,
-            )
-        );
     }
 
     public static function set_default_options() {
@@ -237,6 +273,9 @@ class Sportedia_Activator {
         }
         if (get_option('sportedia_time_format') === false) {
             update_option('sportedia_time_format', 'h:i A');
+        }
+        if (get_option('sportedia_timezone') === false) {
+            update_option('sportedia_timezone', 'Asia/Dubai');
         }
     }
 }

@@ -229,6 +229,13 @@ class Sportedia_Admin_Controller {
                 wp_redirect(admin_url('admin.php?page=sportedia-sessions&msg=session_deleted'));
                 exit;
 
+            // EXPORT HISTORY
+            case 'delete_export_history':
+                $id = intval($_POST['history_id']);
+                Sportedia_Model_Export_History::delete($id);
+                wp_redirect(admin_url('admin.php?page=sportedia-export&msg=export_deleted'));
+                exit;
+
             // SETTINGS
             case 'save_settings':
                 update_option('sportedia_academy_name', sanitize_text_field($_POST['academy_name']));

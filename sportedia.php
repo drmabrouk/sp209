@@ -27,13 +27,16 @@ if (file_exists(SPORTEDIA_PATH . 'vendor/autoload.php')) {
 
 require_once SPORTEDIA_PATH . 'includes/class-sportedia-activator.php';
 
-// Models
+// Core Utilities & Models
+require_once SPORTEDIA_PATH . 'includes/utilities/class-sportedia-datetime.php';
 require_once SPORTEDIA_PATH . 'includes/models/class-sportedia-model-sport.php';
 require_once SPORTEDIA_PATH . 'includes/models/class-sportedia-model-coach.php';
 require_once SPORTEDIA_PATH . 'includes/models/class-sportedia-model-group.php';
 require_once SPORTEDIA_PATH . 'includes/models/class-sportedia-model-timeslot.php';
+require_once SPORTEDIA_PATH . 'includes/models/class-sportedia-model-package.php';
 require_once SPORTEDIA_PATH . 'includes/models/class-sportedia-model-player.php';
 require_once SPORTEDIA_PATH . 'includes/models/class-sportedia-model-session.php';
+require_once SPORTEDIA_PATH . 'includes/models/class-sportedia-model-export-history.php';
 
 // Admin Controllers & Views
 require_once SPORTEDIA_PATH . 'includes/admin/class-sportedia-admin-controller.php';
@@ -67,6 +70,7 @@ class Sportedia {
         add_action('admin_enqueue_scripts', array($this, 'enqueue_admin_assets'));
         add_action('admin_post_sportedia_admin_action', array($this, 'handle_admin_post'));
         add_action('admin_post_sportedia_export_excel', array($this, 'handle_export_excel'));
+        add_action('admin_post_sportedia_download_export_history', array($this, 'handle_download_export_history'));
     }
 
     public function handle_admin_post() {
@@ -88,6 +92,32 @@ class Sportedia {
         );
 
         Sportedia_Excel_Export::generate_and_download_export($report_type, $filters);
+    }
+
+    public function handle_download_export_history() {
+        if (!current_user_can('sportedia_import_export') && !current_user_can('manage_options')) {
+            wp_die(__('You do not have sufficient permissions to download this file.', 'sportedia'));
+        }
+
+        $id = isset($_GET['id']) ? intval($_GET['id']) : 0;
+        $record = Sportedia_Model_Export_History::get($id);
+
+        if (!$record || empty($record->file_path) || !file_exists($record->file_path)) {
+            wp_die(__('The requested export history file does not exist or has been deleted.', 'sportedia'));
+        }
+
+        if (ob_get_length()) {
+            ob_clean();
+        }
+
+        header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        header('Content-Disposition: attachment; filename="' . esc_attr($record->file_name) . '"');
+        header('Content-Length: ' . filesize($record->file_path));
+        header('Cache-Control: max-age=0');
+        header('Pragma: public');
+
+        readfile($record->file_path);
+        exit;
     }
 
     public function register_admin_menus() {

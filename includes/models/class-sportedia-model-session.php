@@ -1,6 +1,9 @@
 <?php
 /**
  * Session Model
+ * Handles operational sessions and player assignment.
+ * Incrementing session package usage upon player addition and decrementing upon removal.
+ * Allows session assignment even when package is completed (recording as additional sessions).
  *
  * @package Sportedia
  */
@@ -35,11 +38,6 @@ class Sportedia_Model_Session {
             return new WP_Error('missing_fields', __('Date, Sport, Time Slot, Group, and Coach are required fields.', 'sportedia'));
         }
 
-        // Validate date format
-        if (!strtotime($session_date)) {
-            return new WP_Error('invalid_date', __('Invalid session date format.', 'sportedia'));
-        }
-
         $session_date = date('Y-m-d', strtotime($session_date));
         $status = sanitize_text_field($data['status'] ?? 'completed');
         $notes = sanitize_textarea_field($data['notes'] ?? '');
@@ -51,7 +49,7 @@ class Sportedia_Model_Session {
         ));
 
         if ($existing) {
-            return $existing; // Return existing session ID if already exists
+            return $existing;
         }
 
         $inserted = $wpdb->insert(
@@ -64,8 +62,8 @@ class Sportedia_Model_Session {
                 'coach_id' => $coach_id,
                 'status' => $status,
                 'notes' => $notes,
-                'created_at' => current_time('mysql'),
-                'updated_at' => current_time('mysql'),
+                'created_at' => Sportedia_DateTime::now(),
+                'updated_at' => Sportedia_DateTime::now(),
             ),
             array('%s', '%d', '%d', '%d', '%d', '%s', '%s', '%s', '%s')
         );
@@ -108,16 +106,12 @@ class Sportedia_Model_Session {
             $update_data['status'] = sanitize_text_field($data['status']);
             $format[] = '%s';
         }
-        if (isset($data['notes'])) {
-            $update_data['notes'] = sanitize_textarea_field($data['notes']);
-            $format[] = '%s';
-        }
 
         if (empty($update_data)) {
             return false;
         }
 
-        $update_data['updated_at'] = current_time('mysql');
+        $update_data['updated_at'] = Sportedia_DateTime::now();
         $format[] = '%s';
 
         return $wpdb->update($table, $update_data, array('id' => intval($id)), $format, array('%d'));
@@ -140,7 +134,7 @@ class Sportedia_Model_Session {
             return new WP_Error('invalid_player', __('Player not found.', 'sportedia'));
         }
 
-        // Duplicate Check: Check if player is already assigned to this session
+        // Duplicate Check in same session
         $existing_in_session = $wpdb->get_var($wpdb->prepare(
             "SELECT id FROM $table_sp WHERE session_id = %d AND player_id = %d",
             $session_id, $player_id
@@ -154,7 +148,7 @@ class Sportedia_Model_Session {
             ));
         }
 
-        // Cross-Session Duplicate Check: Check if player is assigned to another session with SAME date, time_slot, coach, group
+        // Cross-Session Duplicate Check
         $duplicate_cross = null;
         if ($session && !empty($session->session_date)) {
             $table_sessions = self::get_table_name();
@@ -187,7 +181,7 @@ class Sportedia_Model_Session {
             array(
                 'session_id' => $session_id,
                 'player_id' => $player_id,
-                'created_at' => current_time('mysql'),
+                'created_at' => Sportedia_DateTime::now(),
             ),
             array('%d', '%d', '%s')
         );
@@ -196,6 +190,9 @@ class Sportedia_Model_Session {
             return new WP_Error('db_error', __('Could not add player to session.', 'sportedia'));
         }
 
+        // Update player package usage credits (Increment usage)
+        Sportedia_Model_Package::record_session_usage($player_id);
+
         return $wpdb->insert_id;
     }
 
@@ -203,7 +200,7 @@ class Sportedia_Model_Session {
         global $wpdb;
         $table_sp = self::get_session_players_table_name();
 
-        return $wpdb->delete(
+        $deleted = $wpdb->delete(
             $table_sp,
             array(
                 'session_id' => intval($session_id),
@@ -211,6 +208,13 @@ class Sportedia_Model_Session {
             ),
             array('%d', '%d')
         );
+
+        if ($deleted) {
+            // Decrement session package usage
+            Sportedia_Model_Package::decrement_session_usage($player_id);
+        }
+
+        return $deleted;
     }
 
     public static function get_players($session_id) {
@@ -220,7 +224,7 @@ class Sportedia_Model_Session {
         $table_s = Sportedia_Model_Sport::get_table_name();
         $table_g = Sportedia_Model_Group::get_table_name();
 
-        return $wpdb->get_results($wpdb->prepare(
+        $players = $wpdb->get_results($wpdb->prepare(
             "SELECT p.*, sp.created_at as assigned_at, s.name as sport_name, g.name as group_name
              FROM $table_sp sp
              INNER JOIN $table_p p ON sp.player_id = p.id
@@ -230,6 +234,13 @@ class Sportedia_Model_Session {
              ORDER BY p.full_name ASC",
             intval($session_id)
         ));
+
+        foreach ($players as &$p) {
+            $p->package = Sportedia_Model_Package::get_active_package($p->id);
+            $p->missing_fields = Sportedia_Model_Player::get_missing_fields($p);
+        }
+
+        return $players;
     }
 
     public static function get($id) {
@@ -241,7 +252,7 @@ class Sportedia_Model_Session {
         $table_c = Sportedia_Model_Coach::get_table_name();
         $table_sp = self::get_session_players_table_name();
 
-        $session = $wpdb->get_row($wpdb->prepare(
+        return $wpdb->get_row($wpdb->prepare(
             "SELECT s.*,
                     sp.name as sport_name,
                     ts.display_name as time_slot_name, ts.start_time, ts.end_time,
@@ -256,8 +267,6 @@ class Sportedia_Model_Session {
              WHERE s.id = %d",
             intval($id)
         ));
-
-        return $session;
     }
 
     public static function duplicate($session_id, $new_date = null) {
@@ -306,30 +315,13 @@ class Sportedia_Model_Session {
             $where[] = "s.session_date = %s";
             $params[] = $args['session_date'];
         }
-        if (!empty($args['date_from']) && !empty($args['date_to'])) {
-            $where[] = "s.session_date BETWEEN %s AND %s";
-            $params[] = $args['date_from'];
-            $params[] = $args['date_to'];
-        }
         if (!empty($args['sport_id'])) {
             $where[] = "s.sport_id = %d";
             $params[] = intval($args['sport_id']);
         }
-        if (!empty($args['time_slot_id'])) {
-            $where[] = "s.time_slot_id = %d";
-            $params[] = intval($args['time_slot_id']);
-        }
-        if (!empty($args['group_id'])) {
-            $where[] = "s.group_id = %d";
-            $params[] = intval($args['group_id']);
-        }
         if (!empty($args['coach_id'])) {
             $where[] = "s.coach_id = %d";
             $params[] = intval($args['coach_id']);
-        }
-        if (!empty($args['status'])) {
-            $where[] = "s.status = %s";
-            $params[] = $args['status'];
         }
 
         $where_sql = implode(' AND ', $where);
@@ -365,44 +357,7 @@ class Sportedia_Model_Session {
     public static function count_all($args = array()) {
         global $wpdb;
         $table = self::get_table_name();
-
-        $where = array('1=1');
-        $params = array();
-
-        if (!empty($args['session_date'])) {
-            $where[] = "session_date = %s";
-            $params[] = $args['session_date'];
-        }
-        if (!empty($args['date_from']) && !empty($args['date_to'])) {
-            $where[] = "session_date BETWEEN %s AND %s";
-            $params[] = $args['date_from'];
-            $params[] = $args['date_to'];
-        }
-        if (!empty($args['sport_id'])) {
-            $where[] = "sport_id = %d";
-            $params[] = intval($args['sport_id']);
-        }
-        if (!empty($args['time_slot_id'])) {
-            $where[] = "time_slot_id = %d";
-            $params[] = intval($args['time_slot_id']);
-        }
-        if (!empty($args['group_id'])) {
-            $where[] = "group_id = %d";
-            $params[] = intval($args['group_id']);
-        }
-        if (!empty($args['coach_id'])) {
-            $where[] = "coach_id = %d";
-            $params[] = intval($args['coach_id']);
-        }
-
-        $where_sql = implode(' AND ', $where);
-        $sql = "SELECT COUNT(*) FROM $table WHERE $where_sql";
-
-        if (!empty($params)) {
-            $sql = $wpdb->prepare($sql, $params);
-        }
-
-        return (int) $wpdb->get_var($sql);
+        return (int) $wpdb->get_var("SELECT COUNT(*) FROM $table");
     }
 
     public static function delete($id) {

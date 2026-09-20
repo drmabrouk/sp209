@@ -2,7 +2,8 @@
 /**
  * Excel Exporter Engine
  * Generates highly structured, professional, multi-sheet English-only Excel workbooks
- * with coach pastel color coding, freeze panes, auto-filters, summary statistics, and landscape print setups.
+ * with coach pastel color coding, freeze panes, auto-filters, summary statistics, export history logging,
+ * and landscape print setups.
  *
  * @package Sportedia
  */
@@ -14,7 +15,6 @@ if (!defined('ABSPATH')) {
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
 use PhpOffice\PhpSpreadsheet\Style\Fill;
-use PhpOffice\PhpSpreadsheet\Style\Border;
 use PhpOffice\PhpSpreadsheet\Style\Alignment;
 
 class Sportedia_Excel_Export {
@@ -25,7 +25,7 @@ class Sportedia_Excel_Export {
 
         $academy_name = get_option('sportedia_academy_name', 'Sportedia Sports Academy');
 
-        // 1. SUMMARY SHEET (Date -> Time -> Sport -> Group -> Coach -> Players)
+        // 1. SUMMARY SHEET
         self::build_summary_sheet($spreadsheet, $academy_name, $filters);
 
         // 2. SESSIONS SHEET
@@ -40,27 +40,50 @@ class Sportedia_Excel_Export {
         // 5. STATISTICS SHEET
         self::build_statistics_sheet($spreadsheet, $filters);
 
+        // 6. EXPORT INFORMATION SHEET
+        self::build_export_info_sheet($spreadsheet, $academy_name, $report_type, $filters);
+
         // Set Active Sheet to Summary
         $spreadsheet->setActiveSheetIndex(0);
 
-        // Clean output buffer before sending Excel binary headers
+        $filename = 'Sportedia_Report_' . date('Y-m-d_His') . '.xlsx';
+
+        // Save to protected uploads directory for Export History
+        $file_path = '';
+        $file_size = 0;
+        if (function_exists('wp_upload_dir')) {
+            $upload = wp_upload_dir();
+            $dir = $upload['basedir'] . '/sportedia-exports';
+            if (!file_exists($dir)) {
+                wp_mkdir_p($dir);
+            }
+            $file_path = $dir . '/' . $filename;
+            $writer = new Xlsx($spreadsheet);
+            $writer->save($file_path);
+            $file_size = file_exists($file_path) ? filesize($file_path) : 0;
+
+            // Log Export History
+            $date_range = (!empty($filters['date_from']) ? $filters['date_from'] : 'All') . ' to ' . (!empty($filters['date_to']) ? $filters['date_to'] : 'All');
+            Sportedia_Model_Export_History::log_export($filename, $file_path, $report_type, $date_range, $file_size);
+        }
+
+        // Send output to browser for immediate download
         if (ob_get_length()) {
             ob_clean();
         }
-
-        $filename = 'Sportedia_Academy_Report_' . date('Y-m-d_His') . '.xlsx';
 
         header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         header('Content-Disposition: attachment;filename="' . $filename . '"');
         header('Cache-Control: max-age=0');
         header('Cache-Control: max-age=1');
-        header('Expires: Mon, 26 Jul 1997 05:00:00 GMT');
-        header('Last-Modified: ' . gmdate('D, d M Y H:i:s') . ' GMT');
-        header('Cache-Control: cache, must-revalidate');
         header('Pragma: public');
 
-        $writer = new Xlsx($spreadsheet);
-        $writer->save('php://output');
+        if (!empty($file_path) && file_exists($file_path)) {
+            readfile($file_path);
+        } else {
+            $writer = new Xlsx($spreadsheet);
+            $writer->save('php://output');
+        }
         exit;
     }
 
@@ -80,7 +103,7 @@ class Sportedia_Excel_Export {
         // Worksheet Title Header
         $sheet->setCellValue('A1', strtoupper($academy_name) . ' - OPERATIONAL PARTICIPATION SUMMARY');
         $sheet->getStyle('A1')->getFont()->setBold(true)->setSize(16)->setColor(new \PhpOffice\PhpSpreadsheet\Style\Color('1E293B'));
-        $sheet->setCellValue('A2', 'Generated on: ' . date('Y-m-d H:i:s') . ' | Filter Period: ' . ($filters['date_from'] ?? 'All Time'));
+        $sheet->setCellValue('A2', 'Dubai Local Date: ' . Sportedia_DateTime::now('Y-m-d H:i:s') . ' | Period: ' . ($filters['date_from'] ?? 'All Time'));
         $sheet->getStyle('A2')->getFont()->setItalic(true)->setSize(10)->setColor(new \PhpOffice\PhpSpreadsheet\Style\Color('64748B'));
 
         // Coach Color Legend Area
@@ -110,7 +133,7 @@ class Sportedia_Excel_Export {
 
         $sql = "SELECT s.id, s.session_date, sp.name as sport_name, g.name as group_name,
                        c.full_name as coach_name, c.color_hex as coach_color,
-                       ts.display_name as time_slot_name, ts.start_time, ts.end_time
+                       ts.display_name as time_slot_name
                 FROM $sess_table s
                 LEFT JOIN $s_table sp ON s.sport_id = sp.id
                 LEFT JOIN $g_table g ON s.group_id = g.id
@@ -153,9 +176,9 @@ class Sportedia_Excel_Export {
                 foreach ($players as $p) {
                     $sheet->setCellValue('A' . $row_idx, $p->player_code);
                     $sheet->setCellValue('B' . $row_idx, $p->full_name);
-                    $sheet->setCellValue('C' . $row_idx, $p->age);
-                    $sheet->setCellValue('D' . $row_idx, $p->gender);
-                    $sheet->setCellValue('E' . $row_idx, $p->level);
+                    $sheet->setCellValue('C' . $row_idx, $p->age ?: '—');
+                    $sheet->setCellValue('D' . $row_idx, $p->gender ?: '—');
+                    $sheet->setCellValue('E' . $row_idx, $p->level ?: '—');
                     $sheet->setCellValue('F' . $row_idx, $sess->sport_name);
                     $sheet->setCellValue('G' . $row_idx, $sess->coach_name);
                     $row_idx++;
@@ -167,10 +190,9 @@ class Sportedia_Excel_Export {
                 $row_idx++;
             }
 
-            $row_idx++; // Blank row spacing between sessions
+            $row_idx++; // Blank row spacing
         }
 
-        // Auto column widths
         foreach (range('A', 'G') as $col_letter) {
             $sheet->getColumnDimension($col_letter)->setAutoSize(true);
         }
@@ -203,7 +225,6 @@ class Sportedia_Excel_Export {
             $sheet->setCellValue('H' . $row_idx, $s->group_name);
             $sheet->setCellValue('I' . $row_idx, $s->coach_name);
 
-            // Coach pastel color highlight in Coach column
             $clean_hex = ltrim($s->coach_color ?: '3B82F6', '#');
             $sheet->getStyle('I' . $row_idx)->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FF' . $clean_hex);
 
@@ -212,7 +233,7 @@ class Sportedia_Excel_Export {
             $row_idx++;
         }
 
-        $sheet->setAutoFilter('A1:K' . ($row_idx - 1));
+        $sheet->setAutoFilter('A1:K' . max(2, $row_idx - 1));
         $sheet->freezePane('A2');
 
         foreach (range('A', 'K') as $col_letter) {
@@ -224,8 +245,8 @@ class Sportedia_Excel_Export {
         $sheet = $spreadsheet->createSheet();
         $sheet->setTitle('Players');
 
-        $headers = array('Player Code', 'Full Name', 'Gender', 'Date of Birth', 'Age', 'Sport', 'Group', 'Level', 'Status');
-        $cols = array('A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I');
+        $headers = array('Player Code', 'Full Name', 'Gender', 'Date of Birth', 'Age', 'Sport', 'Group', 'Level', 'Package Status', 'Sessions Used / Total');
+        $cols = array('A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J');
 
         foreach ($headers as $idx => $h) {
             $sheet->setCellValue($cols[$idx] . '1', $h);
@@ -239,20 +260,24 @@ class Sportedia_Excel_Export {
         foreach ($players as $p) {
             $sheet->setCellValue('A' . $row_idx, $p->player_code);
             $sheet->setCellValue('B' . $row_idx, $p->full_name);
-            $sheet->setCellValue('C' . $row_idx, $p->gender);
+            $sheet->setCellValue('C' . $row_idx, $p->gender ?: '—');
             $sheet->setCellValue('D' . $row_idx, $p->date_of_birth ?: '—');
-            $sheet->setCellValue('E' . $row_idx, $p->age);
+            $sheet->setCellValue('E' . $row_idx, $p->age ?: '—');
             $sheet->setCellValue('F' . $row_idx, $p->sport_name ?: 'N/A');
             $sheet->setCellValue('G' . $row_idx, $p->group_name ?: 'N/A');
-            $sheet->setCellValue('H' . $row_idx, $p->level);
-            $sheet->setCellValue('I' . $row_idx, ucfirst($p->status));
+            $sheet->setCellValue('H' . $row_idx, $p->level ?: '—');
+
+            $pkg = $p->package;
+            $sheet->setCellValue('I' . $row_idx, ucfirst($pkg ? $pkg->status : 'Active'));
+            $sheet->setCellValue('J' . $row_idx, $pkg ? ($pkg->used_sessions . ' / ' . $pkg->total_sessions) : '0 / 8');
+
             $row_idx++;
         }
 
-        $sheet->setAutoFilter('A1:I' . ($row_idx - 1));
+        $sheet->setAutoFilter('A1:J' . max(2, $row_idx - 1));
         $sheet->freezePane('A2');
 
-        foreach (range('A', 'I') as $col_letter) {
+        foreach (range('A', 'J') as $col_letter) {
             $sheet->getColumnDimension($col_letter)->setAutoSize(true);
         }
     }
@@ -330,46 +355,112 @@ class Sportedia_Excel_Export {
         }
     }
 
+    private static function build_export_info_sheet($spreadsheet, $academy_name, $report_type, $filters) {
+        $sheet = $spreadsheet->createSheet();
+        $sheet->setTitle('Export Information');
+
+        $sheet->setCellValue('A1', 'EXPORT METADATA & AUDIT INFO');
+        $sheet->getStyle('A1')->getFont()->setBold(true)->setSize(14);
+
+        $info = array(
+            'Academy Name' => $academy_name,
+            'Report Type' => $report_type,
+            'Date Range' => ($filters['date_from'] ?? 'All') . ' to ' . ($filters['date_to'] ?? 'All'),
+            'Timezone' => 'Asia/Dubai (UAE Local Time)',
+            'Generation Timestamp' => Sportedia_DateTime::now('Y-m-d H:i:s'),
+            'Generated By' => function_exists('wp_get_current_user') && wp_get_current_user()->display_name ? wp_get_current_user()->display_name : 'System Administrator',
+            'Language' => 'English (100%)',
+        );
+
+        $row_idx = 3;
+        foreach ($info as $label => $val) {
+            $sheet->setCellValue('A' . $row_idx, $label);
+            $sheet->setCellValue('B' . $row_idx, $val);
+            $sheet->getStyle('A' . $row_idx)->getFont()->setBold(true);
+            $row_idx++;
+        }
+
+        foreach (range('A', 'B') as $col_letter) {
+            $sheet->getColumnDimension($col_letter)->setAutoSize(true);
+        }
+    }
+
     public static function render_page() {
+        $history = Sportedia_Model_Export_History::get_all();
         ?>
         <div class="sportedia-wrap">
             <div class="sportedia-header">
                 <div>
-                    <h1 class="sportedia-title"><span class="dashicons dashicons-download"></span> <?php esc_html_e('Excel Export Center', 'sportedia'); ?></h1>
-                    <p class="sportedia-subtitle"><?php esc_html_e('Generate professionally styled multi-sheet Excel workbooks with coach pastel color coding.', 'sportedia'); ?></p>
+                    <h1 class="sportedia-title"><span class="dashicons dashicons-download"></span> <?php esc_html_e('Excel Export & History Hub', 'sportedia'); ?></h1>
+                    <p class="sportedia-subtitle"><?php esc_html_e('Generate styled Excel reports and manage historical export file archives.', 'sportedia'); ?></p>
                 </div>
             </div>
 
-            <div class="sportedia-card" style="max-width: 600px;">
-                <div class="sportedia-card-header">
-                    <h3 class="sportedia-card-title"><?php esc_html_e('Export Filter Criteria', 'sportedia'); ?></h3>
+            <div class="sportedia-grid sportedia-grid-1-3">
+                <div class="sportedia-card">
+                    <div class="sportedia-card-header">
+                        <h3 class="sportedia-card-title"><?php esc_html_e('Generate New Export', 'sportedia'); ?></h3>
+                    </div>
+                    <form method="get" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+                        <input type="hidden" name="action" value="sportedia_export_excel">
+
+                        <div class="sp-form-group">
+                            <label class="sp-form-label"><?php esc_html_e('Start Date', 'sportedia'); ?></label>
+                            <input type="date" name="date_from" class="sp-input" value="<?php echo Sportedia_DateTime::now('Y-m-d'); ?>">
+                        </div>
+
+                        <div class="sp-form-group">
+                            <label class="sp-form-label"><?php esc_html_e('End Date', 'sportedia'); ?></label>
+                            <input type="date" name="date_to" class="sp-input" value="<?php echo Sportedia_DateTime::now('Y-m-d'); ?>">
+                        </div>
+
+                        <button type="submit" class="sp-btn sp-btn-primary" style="width:100%; font-size:14px; padding:10px;"><span class="dashicons dashicons-download"></span> <?php esc_html_e('Download Excel (.xlsx)', 'sportedia'); ?></button>
+                    </form>
                 </div>
-                <form method="get" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
-                    <input type="hidden" name="action" value="sportedia_export_excel">
 
-                    <div class="sp-form-group">
-                        <label class="sp-form-label"><?php esc_html_e('Export Range', 'sportedia'); ?></label>
-                        <select name="export_range" class="sp-select">
-                            <option value="all"><?php esc_html_e('Complete Database', 'sportedia'); ?></option>
-                            <option value="today"><?php esc_html_e('Today Only', 'sportedia'); ?></option>
-                            <option value="week"><?php esc_html_e('Current Week', 'sportedia'); ?></option>
-                            <option value="month"><?php esc_html_e('Current Month', 'sportedia'); ?></option>
-                            <option value="custom"><?php esc_html_e('Custom Date Range', 'sportedia'); ?></option>
-                        </select>
+                <!-- Export History Table -->
+                <div class="sportedia-card">
+                    <div class="sportedia-card-header">
+                        <h3 class="sportedia-card-title"><?php esc_html_e('Export File History Archive', 'sportedia'); ?></h3>
                     </div>
-
-                    <div class="sp-form-group">
-                        <label class="sp-form-label"><?php esc_html_e('Start Date', 'sportedia'); ?></label>
-                        <input type="date" name="date_from" class="sp-input" value="<?php echo current_time('Y-m-d'); ?>">
+                    <div class="sportedia-table-container">
+                        <table class="sportedia-table">
+                            <thead>
+                                <tr>
+                                    <th><?php esc_html_e('File Name', 'sportedia'); ?></th>
+                                    <th><?php esc_html_e('Generated (Dubai Time)', 'sportedia'); ?></th>
+                                    <th><?php esc_html_e('Size', 'sportedia'); ?></th>
+                                    <th><?php esc_html_e('Generated By', 'sportedia'); ?></th>
+                                    <th><?php esc_html_e('Actions', 'sportedia'); ?></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php if (!empty($history)): ?>
+                                    <?php foreach ($history as $h): ?>
+                                        <tr>
+                                            <td><code><?php echo esc_html($h->file_name); ?></code></td>
+                                            <td><?php echo esc_html($h->generation_time); ?></td>
+                                            <td><?php echo esc_html(round($h->file_size / 1024, 1)); ?> KB</td>
+                                            <td><?php echo esc_html($h->generated_by); ?></td>
+                                            <td>
+                                                <a href="<?php echo esc_url(admin_url('admin-post.php?action=sportedia_download_export_history&id=' . $h->id)); ?>" class="sp-btn sp-btn-secondary sp-btn-sm"><?php esc_html_e('Download', 'sportedia'); ?></a>
+                                                <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="display:inline-block;" class="sp-confirm-delete">
+                                                    <input type="hidden" name="action" value="sportedia_admin_action">
+                                                    <input type="hidden" name="sportedia_action" value="delete_export_history">
+                                                    <input type="hidden" name="history_id" value="<?php echo esc_attr($h->id); ?>">
+                                                    <?php wp_nonce_field('sportedia_action_nonce', 'sportedia_nonce'); ?>
+                                                    <button type="submit" class="sp-btn sp-btn-danger sp-btn-sm"><?php esc_html_e('Delete', 'sportedia'); ?></button>
+                                                </form>
+                                            </td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                <?php else: ?>
+                                    <tr><td colspan="5" style="text-align:center; color:var(--sp-text-muted);"><?php esc_html_e('No historical export records logged yet.', 'sportedia'); ?></td></tr>
+                                <?php endif; ?>
+                            </tbody>
+                        </table>
                     </div>
-
-                    <div class="sp-form-group">
-                        <label class="sp-form-label"><?php esc_html_e('End Date', 'sportedia'); ?></label>
-                        <input type="date" name="date_to" class="sp-input" value="<?php echo current_time('Y-m-d'); ?>">
-                    </div>
-
-                    <button type="submit" class="sp-btn sp-btn-primary" style="width:100%; font-size:15px; padding:12px;"><span class="dashicons dashicons-download"></span> <?php esc_html_e('Download Styled Excel Report (.xlsx)', 'sportedia'); ?></button>
-                </form>
+                </div>
             </div>
         </div>
         <?php

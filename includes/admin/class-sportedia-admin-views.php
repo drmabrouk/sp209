@@ -40,6 +40,7 @@ class Sportedia_Admin_Views {
             'session_updated' => array('success', __('Session updated successfully.', 'sportedia')),
             'session_duplicated' => array('success', __('Session duplicated successfully.', 'sportedia')),
             'session_deleted' => array('success', __('Session deleted successfully.', 'sportedia')),
+            'export_deleted' => array('success', __('Export history record deleted successfully.', 'sportedia')),
             'settings_saved' => array('success', __('Settings saved successfully.', 'sportedia')),
             'error' => array('error', !empty($err_msg) ? urldecode($err_msg) : __('An error occurred. Please try again.', 'sportedia')),
         );
@@ -652,6 +653,15 @@ class Sportedia_Admin_Views {
                         </div>
 
                         <div class="sp-form-group">
+                            <label class="sp-form-label"><?php esc_html_e('Session Package Option', 'sportedia'); ?></label>
+                            <select name="package_sessions" class="sp-select">
+                                <option value="8" <?php selected($edit_player && isset($edit_player->package) ? $edit_player->package->total_sessions : 8, 8); ?>><?php esc_html_e('8 Sessions Package', 'sportedia'); ?></option>
+                                <option value="12" <?php selected($edit_player && isset($edit_player->package) ? $edit_player->package->total_sessions : 0, 12); ?>><?php esc_html_e('12 Sessions Package', 'sportedia'); ?></option>
+                                <option value="24" <?php selected($edit_player && isset($edit_player->package) ? $edit_player->package->total_sessions : 0, 24); ?>><?php esc_html_e('24 Sessions Package', 'sportedia'); ?></option>
+                            </select>
+                        </div>
+
+                        <div class="sp-form-group">
                             <label class="sp-form-label"><?php esc_html_e('Status', 'sportedia'); ?></label>
                             <select name="status" class="sp-select">
                                 <option value="active" <?php selected($edit_ts ? $edit_ts->status : 'active', 'active'); ?>><?php esc_html_e('Active', 'sportedia'); ?></option>
@@ -877,7 +887,7 @@ class Sportedia_Admin_Views {
                                     <th><?php esc_html_e('Gender', 'sportedia'); ?></th>
                                     <th><?php esc_html_e('Age', 'sportedia'); ?></th>
                                     <th><?php esc_html_e('Sport', 'sportedia'); ?></th>
-                                    <th><?php esc_html_e('Level', 'sportedia'); ?></th>
+                                    <th><?php esc_html_e('Package Credits', 'sportedia'); ?></th>
                                     <th><?php esc_html_e('Status', 'sportedia'); ?></th>
                                     <th><?php esc_html_e('Actions', 'sportedia'); ?></th>
                                 </tr>
@@ -887,11 +897,27 @@ class Sportedia_Admin_Views {
                                     <?php foreach ($players as $p): ?>
                                         <tr>
                                             <td><code><?php echo esc_html($p->player_code); ?></code></td>
-                                            <td><strong><?php echo esc_html($p->full_name); ?></strong></td>
-                                            <td><?php echo esc_html($p->gender); ?></td>
-                                            <td><?php echo esc_html($p->age); ?> yrs</td>
+                                            <td>
+                                                <strong><?php echo esc_html($p->full_name); ?></strong>
+                                                <?php if (!empty($p->missing_fields)): ?>
+                                                    <br><span class="sp-badge sp-badge-missing" title="Missing: <?php echo esc_attr(implode(', ', $p->missing_fields)); ?>">Missing Info (<?php echo count($p->missing_fields); ?>)</span>
+                                                <?php endif; ?>
+                                            </td>
+                                            <td><?php echo esc_html($p->gender ?: '—'); ?></td>
+                                            <td><?php echo $p->age ? esc_html($p->age) . ' yrs' : '—'; ?></td>
                                             <td><span class="sp-badge sp-badge-sport"><?php echo esc_html($p->sport_name ?: 'N/A'); ?></span></td>
-                                            <td><span class="sp-badge sp-badge-level"><?php echo esc_html($p->level ?: 'N/A'); ?></span></td>
+                                            <td>
+                                                <?php if (!empty($p->package)): ?>
+                                                    <span class="sp-badge sp-badge-<?php echo $p->package->status === 'completed' ? 'completed' : 'pending'; ?>">
+                                                        <?php echo esc_html($p->package->used_sessions); ?> / <?php echo esc_html($p->package->total_sessions); ?> Credits
+                                                    </span>
+                                                    <?php if ($p->package->additional_sessions > 0): ?>
+                                                        <br><small style="color:var(--sp-primary);">(+<?php echo esc_html($p->package->additional_sessions); ?> Extra)</small>
+                                                    <?php endif; ?>
+                                                <?php else: ?>
+                                                    <span class="sp-badge sp-badge-pending">0 / 8 Credits</span>
+                                                <?php endif; ?>
+                                            </td>
                                             <td><span class="sp-badge sp-badge-<?php echo esc_attr($p->status); ?>"><?php echo esc_html(ucfirst($p->status)); ?></span></td>
                                             <td>
                                                 <a href="<?php echo esc_url(admin_url('admin.php?page=sportedia-players&edit=' . $p->id)); ?>" class="sp-btn sp-btn-secondary sp-btn-sm"><?php esc_html_e('Edit', 'sportedia'); ?></a>
