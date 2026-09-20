@@ -5,6 +5,11 @@
     "require": {
         "phpoffice/phpspreadsheet": "^2.0"
     },
+    "autoload": {
+        "classmap": [
+            "includes/"
+        ]
+    },
     "authors": [
         {
             "name": "Sportedia",
